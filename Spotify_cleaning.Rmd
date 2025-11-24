@@ -1,0 +1,402 @@
+---
+title: "Assignment 2 – Spotify Dataset cleaning and Transformation"
+author: |
+  Sneha Jayachandran (23979684)  
+  Undram Chinges (24498014)  
+  Pavithra Devi Balashanmugam (24251484)  
+  Muhammad Aariful Islam (24584192)  
+  Saloni Saloni (24557371)
+
+date: "2025-04-29"
+output:
+  pdf_document:
+    latex_engine: xelatex
+    toc: true
+    
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+``` 
+
+## 1. Load Libraries and Read Data
+
+```{r}
+library(readr)
+library(dplyr)
+library(ggplot2)
+library(naniar)
+
+spotify_df <- read_csv("Spotify dataset.csv")
+
+original_rows <- nrow(spotify_df)
+``` 
+
+## 2. Initial Data Exploration
+
+```{r}
+glimpse(spotify_df)
+str(spotify_df)
+head(spotify_df)
+summary(spotify_df)
+``` 
+
+## 3. Audio Feature Descriptions
+
+
+Below is a table summarizing key audio features used in the Spotify dataset:
+
+| Feature           | Description                                                  |
+|------------------|--------------------------------------------------------------|
+| `speechiness`    | Detects spoken words; higher = more speech-like.             |
+| `acousticness`   | Likelihood that a track is acoustic.                         |
+| `instrumentalness` | Predicts absence of vocals.                                 |
+| `liveness`       | Likelihood the track is live.                                |
+| `valence`        | Musical positivity from 0 (sad) to 1 (happy).                |
+| `tempo`          | Beats per minute.                                            |
+| `time_signature` | Beats per bar (e.g., 3, 4).                                   |
+
+## 4. Data Cleaning
+
+```{r}
+# Remove the redundant first column (named '...1')
+spotify_df <- spotify_df %>% select(-`...1`)
+
+# Check number of duplicate rows
+sum(duplicated(spotify_df))
+
+# View the duplicate rows (if any)
+spotify_df[duplicated(spotify_df), ]
+
+# Remove exact duplicates
+spotify_df <- spotify_df %>% distinct()
+
+# Find duplicated track_ids
+duplicate_track_ids <- spotify_df %>%
+  group_by(track_id) %>%
+  filter(n() > 1) %>%
+  arrange(track_id)
+
+print(duplicate_track_ids)
+
+# Count how many track_ids are duplicated
+spotify_df %>% count(track_id) %>% filter(n > 1) %>% nrow()
+
+# See list of duplicates by frequency
+spotify_df %>% count(track_id, sort = TRUE) %>% filter(n > 1)
+
+# Keep only most popular version of each track_id
+spotify_df <- spotify_df %>%
+  group_by(track_id) %>%
+  slice_max(order_by = popularity, n = 1, with_ties = FALSE) %>%
+  ungroup()
+
+# Confirm no more duplicated track_ids
+spotify_df %>% count(track_id) %>% filter(n > 1) %>% nrow()
+
+#converting all Latino and Latin to Latin
+spotify_df$track_genre <- ifelse(spotify_df$track_genre %in% c("latino", "latin"), "latin", spotify_df$track_genre)
+
+
+``` 
+
+## 5. Data Loss Calculation
+
+```{r}
+cleaned_rows <- nrow(spotify_df)
+rows_removed <- original_rows - cleaned_rows
+percent_lost <- (rows_removed / original_rows) * 100
+
+cat("Rows removed:", rows_removed, "\n")
+cat("Percentage of data lost:", round(percent_lost, 2), "%\n")
+```
+
+Although 21.28% of the dataset was removed, the remaining 89,000+ rows still represent a rich dataset free of redundancy.
+
+## 6. Missing Values
+
+```{r}
+colSums(is.na(spotify_df))
+
+gg_miss_var(spotify_df)
+
+missing_rows <- spotify_df %>% filter(if_any(everything(), is.na))
+print(missing_rows)
+
+spotify_df <- spotify_df %>%
+  filter(!(is.na(track_name) & is.na(artists) & is.na(album_name)))
+
+
+
+
+
+
+
+
+```
+
+To clean the Spotify dataset, we first checked which columns had missing information. We then used a visual chart to quickly see where the most gaps were. Next, we looked at rows that were partly empty and removed any that had no track name, artist, or album—since these didn’t provide any useful details. We also found some rows where the word “NULL” or “null” was typed instead of real values. These were treated as missing and cleaned accordingly to keep the dataset accurate and usable.
+
+## 7. Data Transformation
+
+```{r}
+unique(spotify_df$explicit)
+summary(spotify_df$valence)
+any(is.na(spotify_df$valence))
+range(spotify_df$valence)
+
+# Plot valence distribution
+ggplot(spotify_df, aes(x = valence)) +
+  geom_histogram(binwidth = 0.05, fill = "steelblue", color = "white") +
+  labs(title = "Distribution of Valence (Musical Positivity)",
+       x = "Valence Score",
+       y = "Count")
+``` 
+
+## 8. Feature Engineering
+
+```{r}
+# Mood feature
+spotify_df$mood <- case_when(
+  spotify_df$valence < 0.3 ~ "Sad",
+  spotify_df$valence < 0.6 ~ "Neutral",
+  TRUE ~ "Happy"
+)
+
+# Vibe feature
+spotify_df <- spotify_df %>%
+  mutate(vibe = case_when(
+    valence > 0.6 & energy > 0.6 ~ "Energetic & Happy",
+    valence > 0.6 & energy <= 0.6 ~ "Chill & Happy",
+    valence <= 0.6 & energy > 0.6 ~ "Energetic & Intense",
+    TRUE ~ "Chill & Sad"
+  ))
+``` 
+
+## 9. Genre Exploration
+
+```{r}
+unique_genres <- unique(spotify_df$track_genre)
+print(unique_genres)
+length(unique_genres)
+```
+
+
+## 10. Separating the Primary Artist and Secondary Artists
+
+Some tracks list multiple artists separated by semicolons. For clarity and better visualization, we separate the first-listed artist into a new column called `artist_primary`.
+
+```{r}
+library(dplyr)
+library(tidyr)
+
+spotify_df<- spotify_df%>%
+  separate(artists, into = c("artist_primary", "artist_others"), sep = ";", extra = "merge", fill = "right")
+
+
+
+
+# Define all potential fake-missing values
+fake_nulls <- c("NULL", "null", "", "NA", "N/A", "na", "n/a", "undefined", "missing", "-")
+
+# Filter rows that contain any of these in any column (case-insensitive)
+possible_missing_rows <- spotify_df[apply(spotify_df, 1, function(row) {
+  any(tolower(trimws(row)) %in% tolower(fake_nulls))
+}), ]
+
+# View or inspect them
+print(possible_missing_rows)
+
+
+
+
+```
+
+## 11. Retaining Only the Primary Artist
+
+We drop `artist_others` as it is mostly `NA` and rename `artist_primary` back to `artists`.
+
+```{r}
+spotify_df <- spotify_df %>%
+  select(-artist_others) %>%
+  rename(artists = artist_primary)
+```
+
+## 12. Detecting Non-English Languages in Text Columns
+
+We apply language detection to `artists`, `track_name`, and `album_name` to quantify non-English entries.
+
+```{r}
+# Install and load cld3 (only install once)
+if (!require(cld3)) install.packages("cld3")
+library(cld3)
+
+df<-spotify_df
+
+# Detect languages in each text column
+df$artist_lang <- cld3::detect_language(df$artists)
+df$track_lang <- cld3::detect_language(df$track_name)
+df$album_lang <- cld3::detect_language(df$album_name)
+
+# Count how many are NOT English
+non_en_artists <- sum(df$artist_lang != "en", na.rm = TRUE)
+non_en_tracks <- sum(df$track_lang != "en", na.rm = TRUE)
+non_en_albums <- sum(df$album_lang != "en", na.rm = TRUE)
+
+# Print counts
+cat("Artists with non-English language:", non_en_artists, "\n")
+cat("Track names with non-English language:", non_en_tracks, "\n")
+cat("Albums with non-English language:", non_en_albums, "\n")
+
+# Optional: show most common detected languages
+cat("\nTop artist languages:\n")
+print(sort(table(df$artist_lang), decreasing = TRUE))
+cat("\nTop track name languages:\n")
+print(sort(table(df$track_lang), decreasing = TRUE))
+cat("\nTop album name languages:\n")
+print(sort(table(df$album_lang), decreasing = TRUE))
+```
+
+## 13. Handling Non-English Content in the Dataset
+
+A substantial portion of the dataset includes non-English content:
+
+- Artists with non-English language: **47,841**
+- Track names with non-English language: **43,548**
+- Albums with non-English language: **42,087**
+
+This means that **nearly half of the dataset** includes multilingual content. To standardize and make it easier to read and visualize, we use **transliteration** to convert names from other scripts into the Latin alphabet (e.g., Chinese → "Chen Yixun").
+
+## 14. Transliteration
+
+We apply transliteration to all relevant columns for a consistent phonetic representation.
+
+```{r}
+# Install and load cld3 (for language detection)
+if (!require(cld3)) install.packages("cld3")
+library(cld3)
+
+# Step 1: Detect language from track_name (best signal for language)
+spotify_df$language <- detect_language(spotify_df$track_name)
+
+# Step 2: Transliterate artists, track names, and album names
+library(stringi)
+library(stringr)
+
+spotify_df$artists      <- str_to_title(str_squish(stri_trans_general(spotify_df$artists, "Latin-ASCII")))
+spotify_df$track_name   <- str_to_title(str_squish(stri_trans_general(spotify_df$track_name, "Latin-ASCII")))
+spotify_df$album_name   <- str_to_title(str_squish(stri_trans_general(spotify_df$album_name, "Latin-ASCII")))
+
+
+# Convert all artist names to Latin ASCII-friendly characters
+spotify_df$artists_transliterated <- stringi::stri_trans_general(spotify_df$artists, "Latin-ASCII")
+spotify_df$artists <- stringi::stri_trans_general(spotify_df$artists, "Latin-ASCII")
+
+
+
+
+```
+
+## 15. Extracting Top Tracks from the Most Popular Genres
+
+We select five trending genres and extract their top five most popular tracks based on popularity score.
+
+```{r}
+# Define your top genres
+top_genres <- c("k-pop", "pop-film", "metal", "chill", "latino")
+
+# Filter top tracks per genre
+top_tracks <- spotify_df %>%
+  filter(track_genre %in% top_genres) %>%
+  arrange(desc(popularity)) %>%
+  group_by(track_genre) %>%
+  slice_max(order_by = popularity, n = 5) %>%
+  ungroup()
+```
+
+## 16. Adding Spotify URLs to the Top Tracks
+
+We create valid Spotify links using each track’s unique `track_id`.
+
+```{r}
+# Apply the function to your top tracks
+top_tracks$spotify_url <- paste0("https://open.spotify.com/track/", top_tracks$track_id)
+
+
+# Apply the function to your top tracks
+spotify_df$spotify_url <- paste0("https://open.spotify.com/track/", spotify_df$track_id)
+
+
+
+```
+
+
+
+
+## 17. Studying the top 50 popular tracks on Spotify
+
+```{r}
+# Step 1: Get Top 50 tracks by popularity
+top_50_tracks <- spotify_df %>%
+  arrange(desc(popularity)) %>%
+  distinct(track_id, .keep_all = TRUE) %>%  # ensures unique tracks
+  slice_head(n = 50)
+
+# Step 2: View the genres among those top 50
+top_50_genres <- top_50_tracks %>%
+  count(track_genre, sort = TRUE)
+
+# Display the top 50 genre breakdown
+print(top_50_genres)
+
+```
+
+## 18. Reclassifying the Genres for simplicity
+
+```{r}
+top_50_tracks <- top_50_tracks %>%
+  mutate(parent_genre = case_when(
+    track_genre %in% c("pop") ~ "Pop",
+    track_genre %in% c("latin", "latino") ~ "Latin",
+    track_genre %in% c("dance", "garage", "chill") ~ "Electronic/Dance",
+    track_genre %in% c("hip-hop") ~ "Hip-Hop",
+    track_genre %in% c("rock", "alt-rock") ~ "Rock",
+    track_genre %in% c("country", "folk") ~ "Country/Folk",
+    track_genre %in% c("piano") ~ "Instrumental",
+    track_genre %in% c("reggae") ~ "World",
+    track_genre %in% c("funk") ~ "Funk/Soul",
+    TRUE ~ "Other"
+  ))
+
+```
+
+
+
+
+## 19. Writing into cleaned df into csv and xlsx files.
+
+
+
+```{r}
+write.csv(spotify_df, "spotify_cleaned.csv", row.names = FALSE)
+write.csv(top_50_tracks, "top_50_tracks.csv", row.names = FALSE)
+
+
+```
+
+```{r}
+#install.packages("writexl")   # Run only once
+library(writexl)
+# Save full dataset
+write_xlsx(spotify_df, "spotify_cleaned.xlsx")
+
+
+
+```
+
+
+
+## ✅ Conclusion
+
+This analysis provided a structured approach to cleaning, transforming, and enriching a large Spotify track dataset. Key tasks included removing duplicates, handling missing values, transliterating multilingual content, and creating meaningful features like mood and vibe. Despite losing over 21% of the data during cleaning, the remaining dataset is robust and ready for visualization. Language detection and transliteration proved essential, as nearly half the entries contained non-English text. By filtering top tracks from trending genres and appending Spotify URLs, the dataset is now also dashboard-ready for user-friendly exploration.
+
